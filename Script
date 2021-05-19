@@ -1,0 +1,131 @@
+	gs.log('Starting WF Update', 'WFUpdateLog');
+	var targetTable = 'PLACEHOLDER FOR TABLE NAME'; // Table whose WF needs updated
+	var query; // If query is needed for parent table
+	var debugMode = false;  // Allows reporting
+	var failsafe = false; // 
+	
+	if (debugMode == true) {
+		gs.log('Debug Mode: No updates will be made', 'WFUpdateLog');	
+	}
+	var wf_id = 'PLACEHOLDER WORKFLOW ID'; // ID of PUBLISHED WF (from  wf_workflow)	
+
+	var grWF = new GlideRecord('wf_workflow');
+	grWF.get(wf_id);
+	
+	if (grWF.name) {
+		var canceledParentRecord = []; // Define array to store records whose workflows have been canceled	
+		canceledParentRecord = cancelWorkFlow(targetTable, query); // Cancel workflows and return records of canceled records
+		
+		if (canceledParentRecord.length > 0) {
+			var newParentRecorWF = []; // Define array to store record with new wfs
+			newParentRecorWF = addWorkflow(canceledParentRecord, targetTable, wf_id); 	// Add new WF Conext for returned values
+			gs.log(newParentRecorWF.length + ' records have been updated.', 'WFUpdateLog');
+			gs.log('Completed WF Update', 'WFUpdateLog');
+		} else {
+			gs.log('Error: No records with WF Contexts to update', 'WFUpdateLog');
+		}
+	} else {
+		gs.log('Error: Workflow: ' + wf_id + ' not found.', 'WFUpdateLog');
+	}
+		
+	function cancelWorkFlow(table, query) {
+		var answer = []; // Return answer
+		var failedRecords = []; // Keep track of failed records
+		var skippedCurrentRecords = []; // Keep track of skipped records
+		var skippedUnknownPublishstatus = []; // Keep track of unknown status
+		
+		// Get all parent records
+		var grParentRecord = new GlideRecord(table);
+		if (query) {
+			grParentRecord.addEncodedQuery(query);
+		}
+		grParentRecord.query();
+
+		if (!grParentRecord.hasNext()) {
+			gs.log('Error: No parent records found.', 'WFUpdateLog');
+		}
+		
+		while (grParentRecord.next()) {
+			// Search for Workflow Contexts Associated with current record
+			var parentSyID =  grParentRecord.getValue('sys_id').toString();		
+		
+			var grWFContext = new GlideRecord("wf_context");
+			grWFContext.addEncodedQuery('id=' + parentSyID);
+			grWFContext.query();
+			
+			if (!grWFContext.hasNext()) {
+				failedRecords.push(parentSyID);
+				if (failsafe === true) {
+					answer.push(parentSyID);
+				}
+			}
+			
+			// Check to see if WF Context is the Published version
+			while(grWFContext.next()) {				
+				var wfkFlwVersion = grWFContext.workflow_version;
+				
+				// If version is not published, cancel workflow
+				if(wfkFlwVersion.published == false) {
+					answer.push(parentSyID);
+					
+					if (debugMode == false) {
+						var wfkFlw = new Workflow();
+						wfkFlw.deleteWorkflow(grParentRecord);
+					}
+				} else if(wfkFlwVersion.published == true) {
+					skippedCurrentRecords.push(parentSyID);
+				} else {
+					skippedUnknownPublishstatus.push(parentSyID);
+				}
+			}
+		}
+		
+		gs.log(answer.length + ' WF Contexts have been canceled.', 'WFUpdateLog');
+		gs.log(answer.length + ' Parent records needing new WF context: ' + answer.toString(), 'WFUpdateLog');
+		
+		if (failedRecords.length > 0) {
+			if (failsafe != true) {
+				gs.log('Error: ' + failedRecords.length + ' WF Contexts not found for: ' + failedRecords.toString(), 'WFUpdateLog');
+			} else {
+				gs.log(failedRecords.length + ' WF Contexts not found for: ' + failedRecords.toString() + ' adding WF.', 'WFUpdateLog');
+			}
+		}
+
+		if (skippedUnknownPublishstatus.length > 0) {
+			gs.log('Error: ' + skippedUnknownPublishstatus.length + ' Skipped due to unknown published status ' + skippedUnknownPublishstatus.toString(), 'WFUpdateLog');
+		}
+		
+		if (skippedCurrentRecords.length > 0) {
+			gs.log(skippedCurrentRecords.length + ' WF Contexts have been skipped due being current WF Version ' + skippedCurrentRecords.toString(), 'WFUpdateLog')
+		}
+		
+		return answer; // Return canceled records
+	}
+	
+	function addWorkflow(records, table, wf_id) {
+		var answer = []; // Return answer
+		
+		// Loop through values and create new wf
+		for (var i = 0; i < records.length; i++) {
+			var grParentRecord = new GlideRecord(table);
+			grParentRecord.get(records[i]);
+			
+			// Create new WF
+			if (debugMode == false) {
+				var wfkFlw = new Workflow();
+				wfkFlw.initialize();			
+				var wf_context = wfkFlw.startFlow(wf_id, grParentRecord);
+				
+				if (wf_context) {
+					answer.push(records[i]);
+				} else {
+					gs.log('Error: WF Context not created for ' + records[i], 'WFUpdateLog');
+				}
+			}
+		}
+		return answer; // Return records with new wf
+	}
+	
+	if (debugMode == true) {
+		gs.log('Debug Mode: No updates have been made', 'WFUpdateLog');	
+	}	
